@@ -32,9 +32,9 @@ class ConservativeReviewTest(unittest.TestCase):
                 'touches_window_end':False}]})
         return result
 
-    def test_uses_earliest_shared_end_and_moves_back(self):
+    def test_uses_earliest_shared_end_floored_without_backoff(self):
         result = conservative_candidates(self.report())
-        self.assertEqual([e['review_target_seconds'] for e in result['episodes']],[90,90,90])
+        self.assertEqual([e['review_target_seconds'] for e in result['episodes']],[93,93,93])
         self.assertAlmostEqual(result['episodes'][1]['pair_end_spread_seconds'],27.12)
 
     def test_one_pair_or_truncated_pair_is_not_enough(self):

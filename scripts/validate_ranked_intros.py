@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detect intro candidates for a live ranking, saved ranking, or single series.
+"""Detect intro candidates for rankings, homepage hot series, or a single series.
 
 Media and source URLs stay in the ignored work directory. Usable candidates write
 whole-series API defaults unless --report-only. No Git push or scheduled task. NumPy 2 and fpcalc required.
@@ -127,7 +127,7 @@ def collect(job, root, previous):
 def conservative_candidates(report):
     """Require a mutually overlapping, non-truncated match across all 3 pairs.
 
-    Use the earliest pairwise end per episode, floor it, and move back 3 s.
+    Use the earliest pairwise end per episode and floor it, with no backoff.
     These are review targets, never confidence scores or publishable markers.
     """
     names = [sample['file'] for sample in report['samples']]
@@ -146,7 +146,7 @@ def conservative_candidates(report):
         start, end = max(s[0] for s in spans), min(s[1] for s in spans)
         if end - start < 20:
             return {'status': 'inconsistent_pair_matches', 'episodes': []}
-        target = max(0, math.floor(end) - 3)
+        target = max(0, math.floor(end))
         output.append({'file': name, 'common_index_span': [round(start,3), round(end,3)],
                        'review_target_seconds': target,
                        'pair_end_spread_seconds': round(max(s[1] for s in spans)-end,3),
@@ -163,6 +163,8 @@ def select_episodes(detail):
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PERIOD_LABELS = {'day': '日榜', 'week': '周榜', 'month': '月榜', 'all': '总榜'}
+# The homepage's 连续剧 → 热播 tab requests 12 cards in this order.
+HOME_HOT_PATH = '/v1/pub/index/vod/hot/2/0/12'
 
 
 def positive_int(value):
@@ -195,9 +197,10 @@ def build_parser():
     parser.add_argument('link', nargs='?', type=series_link, help='仅处理这个连续剧的详情或播放链接')
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--url', type=series_link, help='与位置参数 link 等价')
-    source.add_argument('--snapshot', type=Path, help='使用保存的榜单 JSON，代替在线抓榜')
+    source.add_argument('--snapshot', type=Path, help='使用保存的榜单或首页热播 JSON，代替在线获取')
+    parser.add_argument('--home-hot', action='store_true', help='处理首页连续剧「热播」列表，默认全部 12 部，保留页面顺序')
     parser.add_argument('--period', choices=PERIOD_LABELS, help='榜单周期：day/week/month/all，默认 week')
-    parser.add_argument('--limit', type=positive_int, help='榜单前 N 名，默认 10；已有标注跳过后不递补')
+    parser.add_argument('--limit', type=positive_int, help='取前 N 部，榜单默认 10、首页热播默认 12；已有标注跳过后不递补')
     parser.add_argument('--report-only', action='store_true', help='仅生成报告，不写入正式标注')
     parser.add_argument('--force', action='store_true', help='重新分析并用可用结果更新已有默认标注；仍可复用媒体缓存')
     parser.add_argument('--markers-dir', type=Path, default=REPO_ROOT/'api/v1/intros/olevod', help='检查及写入 {剧集ID}.json 的目录')
@@ -216,26 +219,32 @@ def parse_args(argv=None):
     if args.link and (args.url or args.snapshot):
         parser.error('link 不能与 --url 或 --snapshot 同时使用')
     args.vod_id = args.link or args.url
+    if args.home_hot and (args.vod_id or args.period is not None):
+        parser.error('--home-hot 不能与单剧链接或 --period 同时使用')
     if args.vod_id and (args.period is not None or args.limit is not None):
         parser.error('单剧链接不能与榜单参数 --period/--limit 同时使用')
     if args.analyze_only and not (args.snapshot or args.vod_id):
         parser.error('--analyze-only 需要 --snapshot 或单剧链接，不能在线抓榜')
-    args.period = args.period or 'week'
-    args.limit = args.limit or 10
+    args.period = None if args.home_hot else (args.period or 'week')
+    args.limit = args.limit or (12 if args.home_hot else 10)
     return args
 
 
-def ranked_items(data, limit):
+def ranked_items(data, limit, *, preserve_order=False):
     if not isinstance(data, list):
-        raise ValueError('排行榜返回格式不是列表')
+        raise ValueError('连续剧列表返回格式不是列表')
     items, seen = [], set()
     for item in data:
         if not isinstance(item, dict) or type(item.get('id')) is not int or item['id'] <= 0 or not isinstance(item.get('name'), str):
-            raise ValueError('排行榜条目缺少有效 id/name')
+            raise ValueError('连续剧条目缺少有效 id/name')
+        if preserve_order:
+            if item.get('typeId1', 2) != 2:
+                raise ValueError('首页热播列表包含非连续剧条目')
+            continue
         hits = item.get('hits', 0)
         if type(hits) not in (int, float) or not math.isfinite(hits):
             raise ValueError('排行榜 hits 无效')
-    for item in sorted(data, key=lambda x: x.get('hits', 0), reverse=True):
+    for item in (data if preserve_order else sorted(data, key=lambda x: x.get('hits', 0), reverse=True)):
         if item['id'] not in seen:
             items.append(item)
             seen.add(item['id'])
@@ -247,22 +256,28 @@ def select_source(args):
     if args.vod_id:
         return {'mode': 'single', 'fetched_at': now, 'period': None,
                 'data': [{'id': args.vod_id, 'name': f'连续剧 {args.vod_id}'}]}
+    mode = 'home_hot' if args.home_hot else 'ranking'
+    label = '首页最热连续剧' if args.home_hot else '榜单'
     if args.snapshot:
         snapshot = json.loads(args.snapshot.read_text())
-        period = snapshot.get('period', 'week')  # Historical snapshots were weekly.
+        if snapshot.get('mode', 'ranking') != mode:
+            raise ValueError('快照来源与所选模式不符；首页热播快照需搭配 --home-hot')
+        period = snapshot.get('period', None if args.home_hot else 'week')  # Historical snapshots were weekly.
         if period != args.period:
             raise ValueError(f'快照周期为 {period}，与 --period {args.period} 不符')
         datetime.fromisoformat(snapshot['fetched_at'])
         data = snapshot['data']
         now = snapshot['fetched_at']
+    elif args.home_hot:
+        data = api(HOME_HOT_PATH)
     else:
         data = api(f'/v1/pub/index/vod/data/rank/{args.period}/2/{args.limit}')
-    selected = ranked_items(data, args.limit)
+    selected = ranked_items(data, args.limit, preserve_order=args.home_hot)
     if not selected:
-        raise ValueError('榜单为空')
+        raise ValueError(f'{label}为空')
     if len(selected) < args.limit:
-        print(f'榜单仅返回 {len(selected)} 部不同的连续剧，请求前 {args.limit} 名；按实际数量处理。', flush=True)
-    return {'mode': 'ranking', 'fetched_at': now, 'period': args.period, 'data': selected}
+        print(f'{label}仅返回 {len(selected)} 部不同的连续剧，请求前 {args.limit} 部；按实际数量处理。', flush=True)
+    return {'mode': mode, 'fetched_at': now, 'period': args.period, 'data': selected}
 
 
 def find_fpcalc(explicit=None):
@@ -298,8 +313,9 @@ def run(args):
     args.work_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     snapshot = select_source(args)
-    if snapshot['mode'] == 'ranking':
-        (args.work_dir/'ranking-snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n')
+    if snapshot['mode'] != 'single':
+        filename = 'home-hot-snapshot.json' if args.home_hot else 'ranking-snapshot.json'
+        (args.work_dir/filename).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n')
     series, jobs = [], []
     for rank, item in enumerate(snapshot['data'], 1):
         row = {'rank': rank, 'vod_id': item['id'], 'title': item['name'], 'hits': item.get('hits'),
@@ -363,7 +379,10 @@ def run(args):
             row['conservative_review'] = {'status': 'analysis_error', 'episodes': []}
         print(json.dumps({'rank': row['rank'], 'title': row['title'], 'result': row['conservative_review']}, ensure_ascii=False), flush=True)
     skipped = sum(r['processing_status'] == 'skipped_existing' for r in series)
-    report = {'ranking': f'Olevod continuous-series {args.period} top {args.limit}' if not args.vod_id else 'Olevod single series',
+    selection_label = ('Olevod single series' if args.vod_id else
+                       f'Olevod homepage hot series first {args.limit}' if args.home_hot else
+                       f'Olevod continuous-series {args.period} top {args.limit}')
+    report = {'ranking': selection_label,
               'selection_mode': snapshot['mode'], 'ranking_period': snapshot['period'],
               'requested_limit': args.limit if not args.vod_id else None,
               'selected_count': len(series), 'skipped_count': skipped, 'force': args.force,
@@ -371,7 +390,8 @@ def run(args):
               'sample_policy': 'Episodes 2, 3 and 4 only; skip episode 1; first 180 seconds; standard HD source only. Missing episodes are not substituted.',
               'requested_episodes': [2, 3, 4], 'application_scope': 'series_default',
               'scope_note': 'Sample episodes 2–4; apply accepted results as defaultIntro for the entire series, including episode 1. Preserve explicit episode overrides.',
-              'conservative_policy': 'Earliest common pairwise fingerprint end per episode, rounded down, minus 3 seconds. Usable candidates become series defaults; flagged candidates require review.',
+              'candidate_backoff_seconds': 0,
+              'conservative_policy': 'Earliest common pairwise fingerprint end per episode, rounded down, with no backoff. Usable candidates become series defaults; flagged candidates require review.',
               'source_urls_excluded': True, 'production_markers_changed': False, 'scheduled_task_created': False,
               'wall_seconds': round(time.monotonic()-started, 2), 'series': series}
     write_counts = apply_results(report, args.markers_dir, args.force, args.report_only)

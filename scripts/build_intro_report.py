@@ -48,7 +48,7 @@ def marker_write_text(row):
     return label + ('：' + write['reason_note'] if write.get('reason_note') else '')
 
 
-def reason(row):
+def reason(row, backoff_seconds=3):
     if row.get('processing_status') == 'metadata_error':
         return '详情不可用或本地元数据缺失，本次未取样。'
     if row.get('processing_status') == 'analysis_error':
@@ -58,7 +58,7 @@ def reason(row):
     found = list(targets(row).values())
     if not found:
         return '未取得三组完整且互相重叠的匹配；不能据此认定没有片头。'
-    notes = ['候选已从较早共同末端回退 3 秒；需复核。']
+    notes = [f'候选已从较早共同末端回退 {backoff_seconds} 秒；需复核。' if backoff_seconds else '候选取较早共同末端向下取整，不额外回退；需复核。']
     if max(x['pair_end_spread_seconds'] for x in found)>5:
         notes.append('不同配对的末端差异较大，重复广告等内容可能影响匹配。')
     if any(x['preserve_cold_open'] for x in found):
@@ -103,6 +103,11 @@ def main():
     parser.add_argument('--reuse-frames',action='store_true',help='Reuse stills from this same saved sample set')
     args=parser.parse_args()
     report=json.loads(args.input.read_text())
+    # Reports predating this field used a 3-second backoff.
+    backoff = report.get('candidate_backoff_seconds', 3)
+    endpoint_rule = f'末端向下取整并减 {backoff} 秒' if backoff else '末端向下取整，不额外回退'
+    backoff_label = f'−{backoff} 秒' if backoff else '0 秒'
+    backoff_note = '从较早共同末端回退' if backoff else '额外回退（已取消）'
     accepts_ads=report.get('acceptance_policy',{}).get('id')=='opening_or_post_intro_ad'
     accepted=sum(row.get('assessment_status')=='acceptable_sample_candidate' for row in report['series'])
     def verdict(row):
@@ -132,7 +137,7 @@ def main():
     complete=[s for row in report['series'] for s in row['samples'] if s['status']=='complete']
     fresh=[s for s in complete if not s.get('reused') and not s.get('cached_this_invocation')]
     identified=sum(bool(targets(row)) for row in report['series'])
-    table=''.join(f'<tr><td>{r["rank"]}</td><td><a href="#vod-{r["vod_id"]}">{escape(r["title"])}</a><small>{r["vod_id"]}</small></td><td class="time">{summary(r)}</td>'+ (f'<td>{verdict(r)}</td>' if accepts_ads else '') +f'<td>{escape(reason(r))}</td><td>{escape(marker_write_text(r))}</td></tr>' for r in report['series'])
+    table=''.join(f'<tr><td>{r["rank"]}</td><td><a href="#vod-{r["vod_id"]}">{escape(r["title"])}</a><small>{r["vod_id"]}</small></td><td class="time">{summary(r)}</td>'+ (f'<td>{verdict(r)}</td>' if accepts_ads else '') +f'<td>{escape(reason(r, backoff))}</td><td>{escape(marker_write_text(r))}</td></tr>' for r in report['series'])
     cards=[]
     for row in report['series']:
         figures=''.join(f'<figure><img loading="lazy" src="{images[index]}" alt="第 {ep} 集 {clock(second)} 截图"><figcaption>第 {ep} 集 · {clock(second)} · {"候选附近" if matched else "窗口概览"}</figcaption></figure>' for index,ep,second,matched in displays[row['vod_id']] if images[index])
@@ -149,7 +154,7 @@ def main():
                     detail+='；触及取样边界，不视为完整片头'
             pair_rows.append(f'<tr><td>{label}</td><td>{escape(detail)}</td></tr>')
         if row.get('processing_status') in {'skipped_existing', 'metadata_error'}:
-            cards.append(f'<section id="vod-{row["vod_id"]}"><h2>{escape(row["title"])}</h2><p>{escape(reason(row))}</p></section>')
+            cards.append(f'<section id="vod-{row["vod_id"]}"><h2>{escape(row["title"])}</h2><p>{escape(reason(row, backoff))}</p></section>')
             continue
         review=row.get('visual_review_note','截图用于复核，尚不能自动认定其语义为片头。')
         episode_label = ' / '.join(str(e) for e in row.get('selected_episodes', [s['episode'] for s in row['samples']]))
@@ -166,7 +171,9 @@ def main():
     skipped = sum(r.get('processing_status') == 'skipped_existing' for r in report['series'])
     expected = (count - skipped) * 3
     period = {'day': '日榜', 'week': '周榜', 'month': '月榜', 'all': '总榜'}.get(report.get('ranking_period', 'week'), '榜单')
-    selection = ('单剧检测' if report.get('selection_mode') == 'single' else f'连续剧{period}前 {report.get("requested_limit", count)} 名')
+    selection = ('单剧检测' if report.get('selection_mode') == 'single' else
+                 f'首页最热连续剧 · 前 {report.get("requested_limit", count)} 部' if report.get('selection_mode') == 'home_hot' else
+                 f'连续剧{period}前 {report.get("requested_limit", count)} 名')
     title = selection + (' · 保守跳转报告' if accepts_ads else ' · 片头识别验证')
     document = document.replace('<title>连续剧周榜前十 · 片头算法验证报告</title>', f'<title>{escape(title)}</title>')
     stamp=datetime.fromisoformat(report['ranking_fetched_at']).strftime('%Y-%m-%d %H:%M')
@@ -176,12 +183,13 @@ def main():
         document += f'<p><strong>API 标注：写入 {writes["written"]} 部，相同值 {writes["unchanged"]} 部，待复核 {writes["deferred"]} 部，写入失败 {writes["error"]} 部。</strong></p>'
     metric_label='部符合本次样本标准' if accepts_ads else '部产生三集共同候选'
     metric_count=accepted if accepts_ads else identified
-    document+=f'<div class="metrics"><div class="metric"><b>{count}</b><span>部连续剧</span></div><div class="metric"><b>{len(complete)} / {expected}</b><span>完整样本</span></div><div class="metric"><b>{metric_count}</b><span>{metric_label}</span></div><div class="metric"><b>−3 秒</b><span>从较早共同末端回退</span></div></div>'
-    document += f'<p>选中 {count} 部；已有标注跳过 {skipped} 部；本次待处理 {count-skipped} 部。榜单名次保留，跳过后不递补。</p>'
+    document+=f'<div class="metrics"><div class="metric"><b>{count}</b><span>部连续剧</span></div><div class="metric"><b>{len(complete)} / {expected}</b><span>完整样本</span></div><div class="metric"><b>{metric_count}</b><span>{metric_label}</span></div><div class="metric"><b>{backoff_label}</b><span>{backoff_note}</span></div></div>'
+    order_note = '首页热播展示顺序保留，跳过后不递补。' if report.get('selection_mode') == 'home_hot' else '榜单名次保留，跳过后不递补。'
+    document += f'<p>选中 {count} 部；已有标注跳过 {skipped} 部；本次待处理 {count-skipped} 部。{order_note}</p>'
     if accepts_ads:
         document+='<p class="note"><strong>本次标准：保留少量片头或片头后的广告均可接受，以保留正片为优先。</strong>候选落在赞助广告中不再判为失败，也不为去掉广告继续后移。缺少三集共同证据的剧暂不给统一时间。“可接受”仅指本次所选集数样本，不能保证全剧每集都适用。</p><p>取样集数和截图见各剧详情；本地标注写入状态见结果表。</p>'
     else:
-        document+='<p class="note"><strong>检测时间与正式标注写入状态分别列出。</strong>指纹检测的是重复音频，广告、集数字幕及相同配乐可能混入；从指纹坐标回退 3 秒也不能保证不跳剧情。无法形成三集共同证据时不建议跳转。本地标注写入状态见结果表；线上数据需提交推送后更新。</p>'
+        document+='<p class="note"><strong>检测时间与正式标注写入状态分别列出。</strong>指纹检测的是重复音频，广告、集数字幕及相同配乐可能混入；指纹坐标不能保证逐帧对应片头边界。无法形成三集共同证据时不建议跳转。本地标注写入状态见结果表；线上数据需提交推送后更新。</p>'
     if report.get('review_counts'):
         counts=report['review_counts']
         if accepts_ads:
@@ -190,7 +198,7 @@ def main():
             document+=f'<p><strong>截图复核：{counts["opening_frame"]} 部候选仍在片头画面，{counts["advertisement_frame"]} 部落在广告中，{counts["insufficient_evidence"]} 部无法形成三集共同候选。</strong>截图判断由人工完成，不能等同于自动算法已识别广告或正片。</p>'
     verdict_heading='<th>结论</th>' if accepts_ads else ''
     document+=f'<div class="summary-box"><h2>结果一览</h2><p>不同集有不同候选时，按各剧所列取样集数顺序列出。</p><div class="table-wrap"><table><thead><tr><th>序号</th><th>剧名 / ID</th><th>保守候选</th>{verdict_heading}<th>判断依据</th><th>本地标注</th></tr></thead><tbody>{table}</tbody></table></div></div>'
-    document+=f'<div class="summary-box"><h2>方法与耗时</h2><p>FFmpeg 提取单声道音频 → Chromaprint 1.6.2 音频指纹 → 三组跨集匹配 → 每集取两组匹配的共同区间 → 末端向下取整并减 3 秒。仅保留 ≥20 秒且未触及取样尾端的共同重复。没有使用已有人工标注作为输入。</p><p>{stats}<br>流程耗时 {report["wall_seconds"]:.1f} 秒（不含制图与人工复核）；本次音频分析合计 {total_analysis:.2f} 秒。{controls}</p><p>指纹窗口缓冲约 2.6 秒，输出并非逐帧边界。检测不到不代表没有片头，也可能片头位于 3 分钟之后、三集版本不同或匹配条件过严。取样用于推断共同片头；确认后默认应用到整部剧（包括第 1 集），已有单集例外优先。全剧应用不代表逐集验证。画面为本次下载样本的原始抽帧，未调亮或修改。</p></div>'
+    document+=f'<div class="summary-box"><h2>方法与耗时</h2><p>FFmpeg 提取单声道音频 → Chromaprint 1.6.2 音频指纹 → 三组跨集匹配 → 每集取两组匹配的共同区间 → {endpoint_rule}。仅保留 ≥20 秒且未触及取样尾端的共同重复。没有使用已有人工标注作为输入。</p><p>{stats}<br>流程耗时 {report["wall_seconds"]:.1f} 秒（不含制图与人工复核）；本次音频分析合计 {total_analysis:.2f} 秒。{controls}</p><p>指纹窗口缓冲约 2.6 秒，输出并非逐帧边界。检测不到不代表没有片头，也可能片头位于 3 分钟之后、三集版本不同或匹配条件过严。取样用于推断共同片头；确认后默认应用到整部剧（包括第 1 集），已有单集例外优先。全剧应用不代表逐集验证。画面为本次下载样本的原始抽帧，未调亮或修改。</p></div>'
     document+=''.join(cards)
     document+='<footer>仅本地验证报告 · 没有启用自动发布或 GitHub Actions 定时任务 · 媒体链接及访问参数不包含在报告内</footer></main></body></html>'
     args.output.parent.mkdir(parents=True,exist_ok=True)

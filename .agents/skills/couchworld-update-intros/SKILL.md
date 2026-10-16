@@ -1,6 +1,6 @@
 ---
 name: couchworld-update-intros
-description: 为 CouchWorld 按欧乐连续剧日榜、周榜、月榜、总榜或单剧链接半手动更新片头标注，运行现有检测脚本、写入 API JSON、生成报告，并在用户授权发布时提交推送及验证 GitHub Pages。适用于“更新片头”“运行周榜前20名”“强制处理这个剧”等请求；不用于通用视频剪辑或自动创建周期任务。
+description: 为 CouchWorld 按欧乐连续剧日榜、周榜、月榜、总榜、首页最热连续剧或单剧链接半手动更新片头标注，运行现有检测脚本、写入 API JSON、生成报告，并在用户授权发布时提交推送及验证 GitHub Pages。适用于“更新片头”“运行周榜前20名”“处理首页最热连续剧”“强制处理这个剧”等请求；不用于通用视频剪辑或自动创建周期任务。
 ---
 
 # CouchWorld 片头更新
@@ -11,15 +11,18 @@ description: 为 CouchWorld 按欧乐连续剧日榜、周榜、月榜、总榜�
 
 任务中的“更新／运行检测”包含按当前脚本规则写入本地 API 标注和生成报告。“只看报告／不改标注”使用 `--report-only`。Git 提交、推送按本次请求及已有会话授权执行；此 skill 本身不增加发布权限，也不要求对已获授权的动作再次确认。若只获本地运行授权，完成本地工作并说明尚未发布。请求“发布／推送／让 App 从线上拿到更新”时完成提交、推送和线上验证。不要自动创建定时任务。
 
+“再处理几集看看／补查其他集数”同样默认写入可用结果；“看看”不表示仅报告，不要因此要求用户再确认写入。只有用户明确要求仅报告或不改标注时才使用 `--report-only`。补充检测需记录实际 `selected_episodes`，通过 `apply_intro_results.py` 沿用三集共同音频等证据检查后写入；不能因取样集数不是 2–4 就停在报告，也不能绕过证据检查强行写入。
+
 ## 参数映射与关键约定
 
 - 主入口是 `scripts/validate_ranked_intros.py`；默认 `--period week --limit 10`。
 - 日榜／周榜／月榜／总榜映射到 `day/week/month/all`；前 N 名映射到 `--limit N`。先选前 N 名再跳过已有标注，不向后递补。
+- 首页最热连续剧映射到 `--home-hot`，对应首页「连续剧 → 热播」海报列表，默认全部 12 部，保留页面顺序。可用 `--limit N` 缩小范围，超过列表长度按实际数量处理；不能与 `--period` 或单剧链接混用。快照为 `home-hot-snapshot.json`，回放用 `--home-hot --snapshot 文件`，不能与榜单快照混用。
 - 单剧使用详情链接或播放链接作为位置参数，也可用 `--url`；不混用榜单参数。播放链接中的集数不改变默认取样集数。
 - 默认检查 **`api/v1/intros/olevod/{ID}.json`**：存在就不请求详情、不下载、不分析。`work/` 或 `reports/` 中的 JSON 不是跳过依据。
 - 用户要求“强制／覆盖已有／全部重新识别”才加 `--force`：重新分析，并用可用结果覆盖已有全剧默认标注；可复用来源一致的媒体缓存。未产出可用结果时保留旧值。
 - 默认取高清第 2–4 集、各前 180 秒。第 1 集只在取样时排除，结果默认应用 **整部剧，包括第 1 集**，单集例外仍优先保留。
-- 保守跳转方向是向前回退，允许保留片头尾部或紧接片头的广告，不为了去掉广告或黑屏将候选后移。
+- 跳转候选取每集共同音频区间较早的末端，向下取整，不额外回退 3 秒。允许保留片头尾部或紧接片头的广告，不为了去掉广告或黑屏将候选后移。历史报告和标注不自动加 3 秒，需重新检测才应用新策略。
 - OCR 是辅助证据，不是所有剧都必须通过的硬门槛；沿用 `apply_intro_results.py` 的写入条件，不临时降低条件去消除待复核项。OCR 错集数、开头未匹配内容、缺少共同音频、明显时间差等应如实保留原因。`--force` 不绕过证据检查。
 
 ## 执行与报告
@@ -39,6 +42,11 @@ python3 scripts/validate_ranked_intros.py \
 python3 scripts/build_intro_report.py \
   --input work/weekly-run/results.json \
   --output reports/weekly-run.html
+
+# 首页最热连续剧，默认跳过已有标注
+python3 scripts/validate_ranked_intros.py --home-hot --work-dir work/home-hot
+python3 scripts/build_intro_report.py \
+  --input work/home-hot/results.json --output reports/home-hot.html
 ```
 
 例子中的 `--force` 仅在用户要求强制时使用，`--previous-dir` 仅在该目录存在且适合复用时使用。单剧替换为：

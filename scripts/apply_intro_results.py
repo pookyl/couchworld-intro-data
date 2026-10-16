@@ -28,8 +28,15 @@ def proposed_marker(row):
         vod = row['vod_id']
         if type(vod) is not int or vod <= 0:
             raise ValueError()
+        # Supplementary runs may use another explicitly selected three episodes.
+        # Historical reports without this field used episodes 2–4.
+        episodes = row.get('selected_episodes', [2, 3, 4])
+        if (not isinstance(episodes, list) or len(episodes) != 3
+                or any(type(e) is not int or e <= 0 for e in episodes)
+                or len(set(episodes)) != 3):
+            raise ValueError()
         names = {c['file'] for c in candidates}
-        if names != {f'{vod}-{e}.wav' for e in (2, 3, 4)}:
+        if names != {f'{vod}-{e}.wav' for e in episodes}:
             raise ValueError()
         ends = [c['review_target_seconds'] for c in candidates]
         spans = [c['common_index_span'] for c in candidates]

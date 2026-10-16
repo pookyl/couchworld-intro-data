@@ -1,4 +1,4 @@
 interface:
   display_name: "CouchWorld 片头更新"
-  short_description: "按榜单或单剧更新片头标注，核对报告并在授权发布后验证线上数据"
+  short_description: "按榜单、首页热播或单剧更新片头标注，核对报告并在授权发布后验证线上数据"
   default_prompt: "使用 $couchworld-update-intros 更新周榜前 20 名，生成报告并汇报 API 标注写入结果。"

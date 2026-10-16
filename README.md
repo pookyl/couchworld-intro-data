@@ -1,6 +1,6 @@
 # CouchWorld 片头标注与自动识别
 
-独立于 Roku App 的命令行工具与数据仓库。当前支持按日／周／月／总榜或单剧链接自动采样，通过跨集音频比对寻找片头候选，再用 OCR 核对集数卡片，并生成图文报告。确认后的时间可写入全剧默认标注，供 CouchWorld App 读取。
+独立于 Roku App 的命令行工具与数据仓库。当前支持按日／周／月／总榜、首页最热连续剧或单剧链接自动采样，通过跨集音频比对寻找片头候选，再用 OCR 核对集数卡片，并生成图文报告。确认后的时间可写入全剧默认标注，供 CouchWorld App 读取。
 
 **当前自动化范围：取样、音频检测、集数 OCR、结果汇总及可用结果写入 API 标注。** 默认检查 `api/v1/intros/olevod/{ID}.json`，存在就跳过；`--force` 会重新分析并覆盖可用的全剧默认标注，保留单集例外。`--report-only` 仅输出报告。图文报告生成仍是独立命令，脚本不自动提交推送；GitHub Actions 周期任务尚未启用。
 
@@ -49,6 +49,11 @@ python3 scripts/validate_ranked_intros.py --period day --limit 20
 python3 scripts/validate_ranked_intros.py --period month --limit 20
 python3 scripts/validate_ranked_intros.py --period all --limit 20
 
+# 首页「连续剧 → 热播」列表，默认全部 12 部，保留页面顺序
+python3 scripts/validate_ranked_intros.py --home-hot --work-dir work/home-hot
+# 只选首页热播列表前 6 部
+python3 scripts/validate_ranked_intros.py --home-hot --limit 6 --work-dir work/home-hot
+
 # 只处理一个连续剧；也支持播放页链接或 --url 参数
 python3 scripts/validate_ranked_intros.py 'https://www.olevod.com/details-2-85528.html'
 
@@ -67,6 +72,17 @@ python3 scripts/build_intro_report.py \
 
 可继续用 `--snapshot 文件` 代替在线抓榜；新快照记录 `period`，旧版无周期字段的快照按周榜处理，不能拿周榜快照冒充日榜。完全离线时加 `--analyze-only`，并提供快照或单剧链接及包含详情、样本的工作目录。默认跳过规则仍生效，需要重分析已标注剧时同时加 `--force`。
 
+`--home-hot` 对应欧乐首页「连续剧 → 热播」海报列表，调用 `/v1/pub/index/vod/hot/2/0/12`，按接口展示顺序去重后选取，不按 `hits` 重新排序。默认选全部 12 部；`--limit N` 可缩小范围，超过首页列表长度时按实际数量处理，不从其他榜单补足。先选取再跳过已有标注，不递补；`--force`、`--report-only`、取样和写入规则与榜单模式相同。不能与 `--period` 或单剧链接混用。
+
+首页快照保存为工作目录下的 `home-hot-snapshot.json`，报告记录 `selection_mode: home_hot` 和 `ranking_period: null`。回放时必须带 `--home-hot`，避免混用榜单快照；建议使用独立工作目录：
+
+```sh
+python3 scripts/validate_ranked_intros.py --home-hot \
+  --snapshot work/home-hot/home-hot-snapshot.json --analyze-only --work-dir work/home-hot
+python3 scripts/build_intro_report.py \
+  --input work/home-hot/results.json --output reports/home-hot.html
+```
+
 主入口默认把可用候选写入 API 的 `defaultIntro`，覆盖整部剧，包括第 1 集。写入条件为完整三集共同音频证据、从开头附近开始匹配、候选时间差不超过 3 秒且没有 OCR 错集数冲突；统一取较早跳转点。OCR 未检出或集数卡片时间不同，不单独否定音频结果。片头前有未匹配内容等情况保留复核状态，不覆盖已有文件。
 
 `--report-only` 禁止写入标注；`--force --report-only` 可重分析已有标注而不覆盖。每部结果中的 `marker_write` 以及汇总 `marker_write_summary` 明确记录写入、值相同、跳过、待复核或错误。发布仍需提交推送。已有运行结果可以直接补写：
@@ -76,6 +92,8 @@ python3 scripts/apply_intro_results.py \
   --input work/ranked-validation/results.json --force
 ```
 
+补充检测其他集数也默认写入符合条件的结果。结果中 `selected_episodes` 必须记录实际取样的三个不同集数，候选文件须与其一致；未记录该字段的旧报告按第 2–4 集校验。证据不足仍保留待复核。只有明确要求仅报告或不改标注时才使用 `--report-only`。
+
 手工指定时间或单集例外仍使用 `scripts/intro.py`。
 
 ## 当前识别策略
@@ -84,7 +102,7 @@ python3 scripts/apply_intro_results.py \
 
 音频检测使用 [Chromaprint](https://github.com/acoustid/chromaprint) 生成指纹，匹配算法由本项目独立实现。三集两两比对后，要求三组都有至少 20 秒的完整重复区间，且每集的配对区间互相重叠。触及 180 秒取样末端的匹配不能作为完整片头。
 
-每集取共同区间较早的末端，向下取整后再回退 **3 秒**，作为复核候选。保留少量片头或紧接片头的广告均可接受，不为去掉广告继续后移。指纹时间不是逐帧边界；OCR 仅补充确认，不能自动识别所有广告、剧情或特殊编排。证据不足时保留明确状态，不产生正式标注。
+每集取共同区间较早的末端，**向下取整，不再额外回退 3 秒**，作为复核候选。新结果记录 `candidate_backoff_seconds: 0`；历史结果和已写入标注保留原值，重新检测才使用新策略。保留少量片头或紧接片头的广告均可接受，不为去掉广告继续后移。指纹时间不是逐帧边界；OCR 仅补充确认，不能自动识别所有广告、剧情或特殊编排。证据不足时保留明确状态，不产生正式标注。
 
 若只想比对已有音频，可直接调用底层脚本：
 
@@ -161,7 +179,7 @@ python3 scripts/intro.py 'https://www.olevod.com/player/vod/2-84001-1.html' 90 -
 python3 -m unittest discover -s tests -v
 ```
 
-当前包含 **43 项测试**，安装 NumPy 后全部执行；没有 NumPy 时会跳过依赖它的音频与主入口测试。覆盖时间解析、标注合并、音频匹配、保守边界、集数解析与连续帧确认、CLI 参数、榜单排序、已有标注跳过、`--force`、离线快照、不同规模报告、API 自动写入、强制覆盖及单集例外保留。
+安装 NumPy 后全部测试可执行；没有 NumPy 时会跳过依赖它的音频与主入口测试。覆盖时间解析、标注合并、音频匹配、保守边界、集数解析与连续帧确认、CLI 参数、榜单排序、首页热播顺序与来源校验、已有标注跳过、`--force`、离线快照、不同规模报告、API 自动写入、强制覆盖及单集例外保留。
 
 2026-10-15 已验证四种在线榜单接口均可返回 20 条数据；单剧已有标注时在请求详情前跳过，强制离线重分析《美人余》仍得到 1:47。真实视频 OCR 使用 macOS Vision；Linux Tesseract 后端尚未实测。测试使用模拟数据验证 CLI 控制流程，不会批量下载视频。
 

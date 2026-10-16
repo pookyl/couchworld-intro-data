@@ -44,6 +44,25 @@ class ApplyResultsTest(unittest.TestCase):
             self.assertEqual(saved['episodes'],{})
             self.assertTrue(report['production_markers_changed'])
 
+    def test_supplementary_episodes_write_by_default_and_respect_report_only(self):
+        r = row()
+        r['selected_episodes'] = [4, 5, 6]
+        for candidate, episode in zip(r['conservative_review']['episodes'], r['selected_episodes']):
+            candidate['file'] = f'123-{episode}.wav'
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.assertEqual(apply_results({'series':[r]}, root, report_only=True)['report_only'], 1)
+            self.assertFalse((root/'123.json').exists())
+            self.assertEqual(apply_results({'series':[r]}, root)['written'], 1)
+            self.assertEqual(json.loads((root/'123.json').read_text())['defaultIntro']['end'], 90)
+
+    def test_selected_episodes_must_be_three_distinct_valid_matching_samples(self):
+        for episodes in ([], [2,3], [2,3,3], [2,3,4,5], [True,3,4], [0,3,4], ['2',3,4], [4,5,6], None):
+            r = row()
+            r['selected_episodes'] = episodes
+            with self.subTest(episodes=episodes):
+                self.assertEqual(proposed_marker(r), (None, 'invalid_candidate'))
+
     def test_force_preserves_episode_overrides_and_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);p=root/'123.json'
