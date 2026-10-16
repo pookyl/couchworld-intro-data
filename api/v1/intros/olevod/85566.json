@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "provider": "olevod",
+  "vodId": 85566,
+  "defaultIntro": {
+    "start": 0,
+    "end": 88
+  },
+  "episodes": {},
+  "title": "蒸蒸日上"
+}

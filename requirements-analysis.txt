@@ -1,0 +1,2 @@
+# Optional prototype dependencies; the manual annotation CLI remains standard-library only.
+numpy>=2.0,<3
