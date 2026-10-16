@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "provider": "olevod",
+  "vodId": 85232,
+  "defaultIntro": {
+    "start": 0,
+    "end": 114
+  },
+  "episodes": {}
+}

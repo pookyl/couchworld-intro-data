@@ -49,6 +49,10 @@ python3 scripts/intro.py 'https://www.olevod.com/player/vod/2-84001-1.html' 90 -
 
 ## 发布与数据约定
 
-每部连续剧一个 `api/v1/intros/olevod/{ID}.json`。生成的真实标注可提交到本仓库，并从仓库根目录发布到 GitHub Pages；当前未创建远程仓库或配置发布。只发布经过核实的时间，示例命令中的时间不代表真实标注。
+每部连续剧一个 `api/v1/intros/olevod/{ID}.json`。公开仓库为 [pookyl/couchworld-intro-data](https://github.com/pookyl/couchworld-intro-data)，GitHub Pages 从 `main` 分支根目录发布。提交并推送标注后，等待 Pages 部署完成即可访问。
+
+数据 URL：`https://pookyl.github.io/couchworld-intro-data/api/v1/intros/olevod/{ID}.json`。
+
+当前用户提供的全剧默认标注：84001 跳到 110 秒，85232 跳到 114 秒。只发布经过核实的时间，前面的示例命令不代表真实标注。
 
 若未来改用数据库，保留相同 URL 路径、JSON 字段与优先级。没有文件时 HTTP 404 表示没有自定义标注；网络错误不是标注删除。公开仓库中只存标注，不放 Token、Cookie、账号配置或视频文件。
