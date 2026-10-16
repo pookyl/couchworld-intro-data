@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "provider": "olevod",
+  "vodId": 83912,
+  "defaultIntro": {
+    "start": 0,
+    "end": 90
+  },
+  "episodes": {},
+  "title": "交锋"
+}

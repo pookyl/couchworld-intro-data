@@ -2,15 +2,16 @@
 
 独立于 Roku App 的命令行工具与数据仓库。当前支持按日／周／月／总榜或单剧链接自动采样，通过跨集音频比对寻找片头候选，再用 OCR 核对集数卡片，并生成图文报告。确认后的时间可写入全剧默认标注，供 CouchWorld App 读取。
 
-**当前自动化范围：取样、音频检测、集数 OCR、结果汇总。** 图文报告生成和正式标注写入仍是独立命令；尚未接通检测结果自动写入正式标注、GitHub Actions 周期任务或自动发布。`--force` 只强制重新分析，不覆盖正式标注。
+**当前自动化范围：取样、音频检测、集数 OCR、结果汇总及可用结果写入 API 标注。** 默认检查 `api/v1/intros/olevod/{ID}.json`，存在就跳过；`--force` 会重新分析并覆盖可用的全剧默认标注，保留单集例外。`--report-only` 仅输出报告。图文报告生成仍是独立命令，脚本不自动提交推送；GitHub Actions 周期任务尚未启用。
 
 | 脚本 | 职责 |
 | --- | --- |
-| `scripts/validate_ranked_intros.py` | 主入口：选择连续剧、跳过已有标注、获取样本、调用音频与 OCR、输出 `results.json` |
+| `scripts/validate_ranked_intros.py` | 主入口：选择连续剧、跳过已有标注、获取样本、调用音频与 OCR、输出 `results.json` 并写入可用 API 标注 |
 | `scripts/analyze_intro.py` | Chromaprint 指纹与 NumPy 跨集音频比对 |
 | `scripts/episode_cards.py` | 在音频候选附近核对“第几集”卡片 |
 | `scripts/recognize_text.swift` | macOS Apple Vision 本地 OCR 桥接 |
 | `scripts/build_intro_report.py` | 从结果和本地样本生成内嵌截图的 HTML 报告 |
+| `scripts/apply_intro_results.py` | 将已有检测结果补写到 API，无需重新下载或执行 OCR |
 | `scripts/intro.py` | 写入或更新正式标注 JSON，默认应用整部剧 |
 
 ## 环境准备
@@ -41,7 +42,7 @@ python3 scripts/validate_ranked_intros.py --period all --limit 20
 # 只处理一个连续剧；也支持播放页链接或 --url 参数
 python3 scripts/validate_ranked_intros.py 'https://www.olevod.com/details-2-85528.html'
 
-# 已有标注也重新分析
+# 已有 API 标注也重新分析并更新默认值
 python3 scripts/validate_ranked_intros.py 'https://www.olevod.com/details-2-85528.html' --force
 
 # 生成本轮报告
@@ -50,13 +51,22 @@ python3 scripts/build_intro_report.py \
   --output reports/latest-intro-report.html
 ```
 
-默认在获取详情、下载和分析之前检查仓库的 `api/v1/intros/olevod/{ID}.json`，只要文件存在就跳过，包括单集例外或禁用标注文件。不会把 `work/` 中的分析报告当作正式标注。`--markers-dir` 可指定其他标注目录；`--force` 覆盖跳过规则，仍可复用来源一致的媒体缓存，并不强制重新下载，也不自动覆盖正式标注。
+默认在获取详情、下载和分析之前检查仓库的 `api/v1/intros/olevod/{ID}.json`，只要文件存在就跳过，包括单集例外或禁用标注文件。不会把 `work/` 中的分析报告当作正式标注。`--markers-dir` 可指定检查和写入的标注目录。`--force` 覆盖跳过规则，重新分析后用可用结果覆盖该目录中的全剧默认标注；仍可复用来源一致的媒体缓存，不强制重新下载。无法取得可用结果时保留旧标注。
 
 `--limit 20` 表示选中榜单前 20 名，再跳过其中已有标注的剧，不向后递补。服务返回不足 N 部时按实际数量处理并提示。默认 `--period week`、`--limit 10`，单剧模式不能混用榜单参数。输出 `work/ranked-validation/results.json` 包含实际选中数、跳过数和每部处理状态，排行榜快照保存为同目录的 `ranking-snapshot.json`。`--work-dir` 可指定其他工作目录。
 
 可继续用 `--snapshot 文件` 代替在线抓榜；新快照记录 `period`，旧版无周期字段的快照按周榜处理，不能拿周榜快照冒充日榜。完全离线时加 `--analyze-only`，并提供快照或单剧链接及包含详情、样本的工作目录。默认跳过规则仍生效，需要重分析已标注剧时同时加 `--force`。
 
-该入口仍输出复核结果；确认后通过 `scripts/intro.py` 写入全剧默认标注，发布另行提交并推送。`--force` 本身不写入或发布正式标注。
+主入口默认把可用候选写入 API 的 `defaultIntro`，覆盖整部剧，包括第 1 集。写入条件为完整三集共同音频证据、从开头附近开始匹配、候选时间差不超过 3 秒且没有 OCR 错集数冲突；统一取较早跳转点。OCR 未检出或集数卡片时间不同，不单独否定音频结果。片头前有未匹配内容等情况保留复核状态，不覆盖已有文件。
+
+`--report-only` 禁止写入标注；`--force --report-only` 可重分析已有标注而不覆盖。每部结果中的 `marker_write` 以及汇总 `marker_write_summary` 明确记录写入、值相同、跳过、待复核或错误。发布仍需提交推送。已有运行结果可以直接补写：
+
+```sh
+python3 scripts/apply_intro_results.py \
+  --input work/ranked-validation/results.json --force
+```
+
+手工指定时间或单集例外仍使用 `scripts/intro.py`。
 
 ## 当前识别策略
 
@@ -141,7 +151,7 @@ python3 scripts/intro.py 'https://www.olevod.com/player/vod/2-84001-1.html' 90 -
 python3 -m unittest discover -s tests -v
 ```
 
-当前包含 **35 项测试**，安装 NumPy 后全部执行；没有 NumPy 时会跳过依赖它的音频与主入口测试。覆盖时间解析、标注合并、音频匹配、保守边界、集数解析与连续帧确认、CLI 参数、榜单排序、已有标注跳过、`--force`、离线快照及不同规模报告。
+当前包含 **43 项测试**，安装 NumPy 后全部执行；没有 NumPy 时会跳过依赖它的音频与主入口测试。覆盖时间解析、标注合并、音频匹配、保守边界、集数解析与连续帧确认、CLI 参数、榜单排序、已有标注跳过、`--force`、离线快照、不同规模报告、API 自动写入、强制覆盖及单集例外保留。
 
 2026-10-15 已验证四种在线榜单接口均可返回 20 条数据；单剧已有标注时在请求详情前跳过，强制离线重分析《美人余》仍得到 1:47。真实视频 OCR 使用 macOS Vision；Linux Tesseract 后端尚未实测。测试使用模拟数据验证 CLI 控制流程，不会批量下载视频。
 
@@ -163,10 +173,19 @@ python3 -m unittest discover -s tests -v
 
 | ID | 剧名 | 跳转点 | 来源 |
 | --- | --- | --- | --- |
-| 84001 | 兰香如故 | 1:50（110 秒） | 原人工标注，保持原值 |
-| 85232 | 魅影神捕 | 1:54（114 秒） | 原人工标注，保持原值 |
-| 85528 | 美人余 | 1:47（107 秒） | 第 2–4 集检测与画面复核，默认应用全剧 |
-| 85566 | 蒸蒸日上 | 1:28（88 秒） | 第 2–4 集检测与画面复核，默认应用全剧 |
+| 51882 | 一念关山 | 1:44（104 秒） | 三集检测结果，默认应用全剧 |
+| 83912 | 交锋 | 1:30（90 秒） | 三集检测结果，默认应用全剧 |
+| 83925 | 死有对证【粤语】 | 0:56（56 秒） | 三集检测结果，默认应用全剧 |
+| 84001 | 兰香如故 | 1:50（110 秒） | 原人工标注；本轮待复核，保留原值 |
+| 84094 | 一瓯春 | 1:46（106 秒） | 三集检测结果，默认应用全剧 |
+| 85101 | 无可替代 | 1:36（96 秒） | 三集检测结果，默认应用全剧 |
+| 85141 | 余红旧事 | 0:56（56 秒） | 三集检测结果，默认应用全剧 |
+| 85232 | 魅影神捕 | 1:41（101 秒） | 三集检测结果，默认应用全剧 |
+| 85411 | 喜剧之王 | 1:45（105 秒） | 三集检测结果，默认应用全剧 |
+| 85528 | 美人余 | 1:47（107 秒） | 三集检测结果，默认应用全剧 |
+| 85545 | 伟大的长征 | 1:38（98 秒） | 三集检测结果，默认应用全剧 |
+| 85566 | 蒸蒸日上 | 1:28（88 秒） | 三集检测结果，默认应用全剧 |
+| 85646 | 玉簟秋 | 1:54（114 秒） | 三集检测结果，默认应用全剧 |
 
 公开仓库为 [pookyl/couchworld-intro-data](https://github.com/pookyl/couchworld-intro-data)，[GitHub Pages](https://pookyl.github.io/couchworld-intro-data/) 从 `main` 分支根目录发布。**本地写入或提交不等于线上更新**；提交推送后还需等待 Pages 部署完成。
 

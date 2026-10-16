@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Detect intro candidates for a live ranking, saved ranking, or single series.
 
-Media and source URLs stay in the ignored work directory. This does not modify
-api/, publish a report, or create a scheduled task. NumPy 2 and fpcalc required.
+Media and source URLs stay in the ignored work directory. Usable candidates write
+whole-series API defaults unless --report-only. No Git push or scheduled task. NumPy 2 and fpcalc required.
 """
 import argparse
 import concurrent.futures
@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from analyze_intro import analyze
 from episode_cards import verify_row
+from apply_intro_results import apply_results
 
 
 def signature(stamp):
@@ -190,15 +191,16 @@ def series_link(value):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description='检测欧乐连续剧片头：默认周榜前 10 名，取第 2–4 集；已有标注默认跳过。只生成复核结果，不发布。')
+    parser = argparse.ArgumentParser(description='检测欧乐连续剧片头：默认周榜前 10 名，取第 2–4 集；已有标注默认跳过。可用结果默认写入 API JSON，不自动推送。')
     parser.add_argument('link', nargs='?', type=series_link, help='仅处理这个连续剧的详情或播放链接')
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--url', type=series_link, help='与位置参数 link 等价')
     source.add_argument('--snapshot', type=Path, help='使用保存的榜单 JSON，代替在线抓榜')
     parser.add_argument('--period', choices=PERIOD_LABELS, help='榜单周期：day/week/month/all，默认 week')
     parser.add_argument('--limit', type=positive_int, help='榜单前 N 名，默认 10；已有标注跳过后不递补')
-    parser.add_argument('--force', action='store_true', help='即使标注 JSON 已存在也重新分析；仍可复用媒体缓存')
-    parser.add_argument('--markers-dir', type=Path, default=REPO_ROOT/'api/v1/intros/olevod', help='检查已有 {剧集ID}.json 的目录')
+    parser.add_argument('--report-only', action='store_true', help='仅生成报告，不写入正式标注')
+    parser.add_argument('--force', action='store_true', help='重新分析并用可用结果更新已有默认标注；仍可复用媒体缓存')
+    parser.add_argument('--markers-dir', type=Path, default=REPO_ROOT/'api/v1/intros/olevod', help='检查及写入 {剧集ID}.json 的目录')
     parser.add_argument('--work-dir', type=Path, default=REPO_ROOT/'work/ranked-validation', help='样本与 results.json 目录')
     parser.add_argument('--previous-dir', type=Path, default=REPO_ROOT/'work/intro-validation', help='可复用的旧样本目录')
     parser.add_argument('--fpcalc', help='fpcalc 路径；默认从 PATH 或本地已下载版本查找')
@@ -369,9 +371,11 @@ def run(args):
               'sample_policy': 'Episodes 2, 3 and 4 only; skip episode 1; first 180 seconds; standard HD source only. Missing episodes are not substituted.',
               'requested_episodes': [2, 3, 4], 'application_scope': 'series_default',
               'scope_note': 'Sample episodes 2–4; apply accepted results as defaultIntro for the entire series, including episode 1. Preserve explicit episode overrides.',
-              'conservative_policy': 'Earliest common pairwise fingerprint end per episode, rounded down, minus 3 seconds. Review candidates only.',
+              'conservative_policy': 'Earliest common pairwise fingerprint end per episode, rounded down, minus 3 seconds. Usable candidates become series defaults; flagged candidates require review.',
               'source_urls_excluded': True, 'production_markers_changed': False, 'scheduled_task_created': False,
               'wall_seconds': round(time.monotonic()-started, 2), 'series': series}
+    write_counts = apply_results(report, args.markers_dir, args.force, args.report_only)
+    print('标注写入：' + json.dumps(write_counts, ensure_ascii=False), flush=True)
     fresh = [s for s in samples if s['status'] == 'complete' and not s.get('reused') and not s.get('cached_this_invocation')]
     if fresh:
         ends = [(args.work_dir/f'{s["vod_id"]}-{s["episode"]}.stats.json').stat().st_mtime for s in fresh]
@@ -385,7 +389,9 @@ def run(args):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        run(args)
+        report = run(args)
+        if report['marker_write_summary']['error']:
+            raise SystemExit(1)
     except (ValueError, OSError, KeyError) as error:
         raise SystemExit(f'错误：{error}') from None
 

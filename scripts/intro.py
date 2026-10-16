@@ -88,7 +88,12 @@ def reject_duplicate_keys(pairs):
 
 
 def save_marker(root, vod_id, episode, marker, series=True, title=None):
-    target = root / "api" / "v1" / "intros" / "olevod" / f"{vod_id}.json"
+    return save_marker_to_directory(root / "api" / "v1" / "intros" / "olevod",
+                                    vod_id, episode, marker, series, title)
+
+
+def save_marker_to_directory(directory, vod_id, episode, marker, series=True, title=None):
+    target = directory / f"{vod_id}.json"
     if target.exists():
         document = json.loads(target.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
         validate_document(document, vod_id)

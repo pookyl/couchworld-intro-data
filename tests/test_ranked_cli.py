@@ -86,6 +86,32 @@ class RankedCLITest(unittest.TestCase):
             self.assertEqual(report['skipped_count'],0)
             self.assertEqual((root/'85528.json').read_text(),'keep')
 
+    def test_main_force_writes_detected_default_into_api_and_preserves_exceptions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); markers=root/'api/v1/intros/olevod'; markers.mkdir(parents=True)
+            old={'schemaVersion':1,'provider':'olevod','vodId':85528,'defaultIntro':{'start':0,'end':110},
+                 'episodes':{'1':{'disabled':True}}}
+            (markers/'85528.json').write_text(json.dumps(old))
+            args=cli.parse_args(['https://www.olevod.com/details-2-85528.html','--force','--skip-ocr',
+                                 '--markers-dir',str(markers),'--work-dir',str(root/'work')])
+            detail={'name':'Example','urls':[{'index':e,'url':f'url-{e}'} for e in (2,3,4)]}
+            analysis={'samples':[{'file':f'85528-{e}.wav'} for e in (2,3,4)],'pairs':[]}
+            for first,second in [(2,3),(2,4),(3,4)]:
+                analysis['pairs'].append({'first':f'85528-{first}.wav','second':f'85528-{second}.wav',
+                    'candidates':[{'first_index_span_seconds':[0,91],'second_index_span_seconds':[0,91],
+                                   'touches_window_end':False}]})
+            def collected(job,*args):
+                return {'vod_id':job[0],'episode':job[1],'status':'complete','reused':True}
+            with patch.object(cli,'api',return_value=detail), patch.object(cli,'collect',side_effect=collected), \
+                    patch.object(cli,'find_fpcalc',return_value='fpcalc'), patch.object(cli,'analyze',return_value=analysis), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result=cli.run(args)
+            saved=json.loads((markers/'85528.json').read_text())
+            self.assertEqual(saved['defaultIntro'],{'start':0,'end':88})
+            self.assertEqual(saved['episodes'],old['episodes'])
+            self.assertEqual(result['marker_write_summary']['written'],1)
+            self.assertTrue(result['production_markers_changed'])
+
     def test_twenty_selected_and_all_skipped_report_is_not_top_ten(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "provider": "olevod",
+  "vodId": 85411,
+  "defaultIntro": {
+    "start": 0,
+    "end": 105
+  },
+  "episodes": {},
+  "title": "喜剧之王"
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "provider": "olevod",
+  "vodId": 85101,
+  "defaultIntro": {
+    "start": 0,
+    "end": 96
+  },
+  "episodes": {},
+  "title": "无可替代"
+}
