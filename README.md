@@ -14,6 +14,16 @@
 | `scripts/apply_intro_results.py` | 将已有检测结果补写到 API，无需重新下载或执行 OCR |
 | `scripts/intro.py` | 写入或更新正式标注 JSON，默认应用整部剧 |
 
+## 项目 Skill
+
+本仓库包含 [couchworld-update-intros](.agents/skills/couchworld-update-intros/SKILL.md)，随 Git 维护。它指导 Codex 执行片头更新、生成报告，并在授权发布时提交推送及验证线上数据。仓库级 `.agents/skills/` 是 [Codex 支持的技能发现位置](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)，无需复制到个人技能目录。
+
+在此项目中可直接说：
+
+> 使用 $couchworld-update-intros 更新周榜前 20 名，加 --force，并发布。
+
+只做本地更新或只生成报告时，在请求中说明即可。Skill 的源文件为 `.agents/skills/couchworld-update-intros/SKILL.md`，显示信息在同目录的 `agents/openai.yaml`；修改这两处后随项目提交，避免维护个人目录里的另一份副本。
+
 ## 环境准备
 
 在仓库根目录执行示例命令。手工标注只需 Python 3.8+ 标准库；完整自动分析使用 **Python 3.10+、NumPy 2.x、FFmpeg 和 Chromaprint 的 `fpcalc`**。建议使用独立 Python 环境：
